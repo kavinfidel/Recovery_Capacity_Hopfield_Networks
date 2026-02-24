@@ -1,2 +1,7 @@
 
-plotss
+Plots
+__pycache__/
+**/*.png
+*.pkl
+**/*.gif
+*txt

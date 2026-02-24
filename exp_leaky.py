@@ -6,7 +6,7 @@ import seaborn as sns
 sns.set(style = 'whitegrid',font_scale = 1.2)
 plt.style.use('default')
 
-from hopfield_gpu import Hopfield_Network_gpu
+from old_py_files.hopfield_gpu import Hopfield_Network_gpu
 
 
 def generate_patterns(n, size):

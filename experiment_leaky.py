@@ -1,12 +1,12 @@
 import os
 import numpy as np
-
+import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set(style = 'whitegrid',font_scale = 1.2)
 plt.style.use('default')
 
-from hopfield_gpu import Hopfield_Network_gpu
+from old_py_files.hopfield_gpu import Hopfield_Network_gpu
 
 
 def generate_patterns(n, size):
@@ -40,9 +40,12 @@ for n_value in pattern_counts:
             print(f"{k}th value")
             max_overlaps = []
             successes = 0
-            model = Hopfield_Network_gpu(size, patterns, k, activation=act, device = 'cuda')
+            model = Hopfield_Network_gpu(size, patterns, k, activation=act, device = 'mps')
+    
+            i = 0
             for _ in range(n_trials):
-                
+                print(i)
+                i += 1
                 success, max_overlap = model.mc_simulation_recovery(epochs, temp)
                 successes += success
                 max_overlaps.append(max_overlap)
@@ -62,3 +65,5 @@ for n_value in pattern_counts:
     plt.tight_layout()
     plt.savefig("leaky_large_k.png")
     plt.show()
+    with open(f"all_overlaps_leaky.pkl", "wb") as f:
+        pickle.dump(all_overlaps_by_setting, f)

@@ -7,12 +7,13 @@ import torch
 
 
 class Hopfield_Network_gpu:
-    def __init__(self, size, patterns, k , activation, alpha = 0.01, device = 'cuda'):
+    def __init__(self, size, patterns, k , activation, alpha = 0.01, device = 'mps'):
         self.size = size
         self.k = k 
         self.activation = activation
         self.alpha = alpha
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(device if torch.backends.mps.is_available() else 'cpu')
+        print(self.device)
 
 
         self.patterns = torch.tensor(patterns, dtype = torch.float32, device = self.device)
@@ -87,8 +88,8 @@ class Hopfield_Network_gpu:
 
         overlaps = torch.matmul(patterns_arr,x)
         
-        perfect_recovery = (overlaps/self.size >= 1-ratio).any().item()
-        max_overlap = overlaps.max().item()
+        perfect_recovery = (overlaps/self.size >= 1-ratio).any(dim=1)
+        max_overlap = overlaps.max(dim=1).values
 
         return perfect_recovery, max_overlap
 

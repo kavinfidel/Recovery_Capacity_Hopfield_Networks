@@ -75,14 +75,71 @@ class Hopfield_Network_gpu:
             energy = -0.5 * torch.bmm(x_batch.unsqueeze(1), tmp).squeeze()  # (batch,)
             return energy  # float tensor (batch,)
 
-    def mc_simulation_recovery_batch(self, n_trials_in_batch, epochs, temp):
+    def mc_simulation_recovery_batch(self,n_trials_in_batch, epochs, temp):
+
         """
         Simulate `n_trials_in_batch` independent trials in parallel and return:
             perfect_recovery: boolean tensor (batch,)
             max_overlap: float tensor (batch,) (max overlaps across patterns)
         """
+      #  x = corrupted_x.clone().contiguous()
+
         ratio = 1.0 / self.size
         batch = n_trials_in_batch
+
+        # initialize x for the batch: random +-1 values
+        x = (torch.randint(0,2,(batch, self.size), device=self.device, dtype=torch.float32) * 2.0 - 1.0).contiguous()
+        patterns_arr = self.patterns  # (n_patterns, size)
+
+        arange_batch = torch.arange(batch, device=self.device)
+
+        # run epochs: one bit flip per trial per epoch (vectorized)
+        for _ in range(epochs):
+            # choose per-trial flip indices
+            flip_indices = torch.randint(0, self.size, (batch,), device=self.device)
+
+            # prepare x_flipped: flip the chosen bit for each trial
+            x_flipped = x.clone()
+            x_flipped[arange_batch, flip_indices] *= -1.0
+
+            # compute energies for whole batch
+            energy_x = self.energy_calc_batch(x)
+            energy_x_flip = self.energy_calc_batch(x_flipped)
+            energy_diff = energy_x_flip - energy_x  # (batch,)
+
+            if temp == 0:
+                accept_mask = energy_diff < 0
+            else:
+                # vectorized metropolis acceptance
+                probs = torch.exp(-energy_diff / temp)
+                rand = torch.rand(batch, device=self.device)
+                accept_mask = (energy_diff < 0) | (rand < probs)
+
+            # update only accepted trials
+            if accept_mask.any():
+                x[accept_mask] = x_flipped[accept_mask]
+
+        # compute overlaps final: (n_patterns, batch) = patterns (n_patterns,size) @ x.T (size,batch)
+        overlaps = torch.matmul(patterns_arr, x.t())  # (n_patterns, batch)
+
+        perfect_recovery = (overlaps / self.size >= 1 - ratio).any(dim=0) 
+
+        max_overlap = overlaps.max(dim=0).values
+        
+
+        return perfect_recovery, max_overlap
+    
+
+    def mc_simulation_recovery_corrupted_batch(self,corrupted_x, epochs, temp):
+        """
+        Simulate `n_trials_in_batch` independent trials in parallel and return:
+            perfect_recovery: boolean tensor (batch,)
+            max_overlap: float tensor (batch,) (max overlaps across patterns)
+        """
+        x = corrupted_x.clone().contiguous()
+
+        ratio = 1.0 / self.size
+        batch = x.shape[0]
 
         # initialize x for the batch: random +-1 values
         x = (torch.randint(0,2,(batch, self.size), device=self.device, dtype=torch.float32) * 2.0 - 1.0).contiguous()

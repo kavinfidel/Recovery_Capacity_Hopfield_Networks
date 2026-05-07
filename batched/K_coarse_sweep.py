@@ -92,10 +92,10 @@ def summarize_for_act(metrics, act, k_values):
 # -------------------------
 # Experiment settings
 # -------------------------
-acts = ['step', 'relu', 'leaky','elu']
-coarse_k_values = np.linspace(0.15, 0.45, 51)  # 0 → 0.6
+acts = ['elu']
+coarse_k_values = np.linspace(0.15, 0.5, 51)  # 0 → 0.6
 n_trials = 500
-size = 100
+size = 200
 epochs = 1000
 temp = 0
 pattern_counts = [2000]

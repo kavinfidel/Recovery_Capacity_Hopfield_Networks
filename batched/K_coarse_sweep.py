@@ -4,13 +4,14 @@ import matplotlib.pyplot as plt
 import pickle
 import numpy as np
 import pandas as pd
+import argparse
 
 from hopfield_batched import Hopfield_Network_gpu
 
 def generate_patterns(n, size):
     return np.random.choice([-1, 1], size=(n, size))
 
-def evaluate_grid(acts, k_values, n_trials, size, epochs, temp, n_value, batch_size=128, device='cuda'):
+def evaluate_grid(acts, k_values, n_trials, size, epochs, temp, n_value, batch_size=128, device='cuda', corruption_rate=0.10):
     """
     Evaluate recovery performance across activation types and thresholds k.
     Returns metrics dictionary: (act,k) -> {'recovery_fraction', 'max_overlap'}
@@ -30,8 +31,18 @@ def evaluate_grid(acts, k_values, n_trials, size, epochs, temp, n_value, batch_s
 
             while n_done < n_trials:
                 bs = min(batch_size, n_trials - n_done)
-                # Run batch simulation
-                perfect_recovery, _ = model.mc_simulation_recovery_batch(bs, epochs, temp)
+                idx = torch.randint(0, n_value, (bs,), device=model.device)
+                target_patterns = model.patterns[idx]
+                x_corrupted = target_patterns.clone()
+                noise_mask = torch.rand(x_corrupted.shape, device=model.device) < corruption_rate
+                x_corrupted[noise_mask] *= -1.0
+
+                perfect_recovery, max_ov = model.mc_simulation_recovery_corrupted_batch(
+                    x_corrupted,
+                    epochs,
+                    temp,
+                    target_indices=idx,
+                )
                 successes += int(perfect_recovery.sum().item())
                 #max_overlaps.extend(max_ov.cpu().tolist())
                 n_done += bs  
@@ -78,81 +89,103 @@ def summarize_for_act(metrics, act, k_values):
     # 3. Low K (The Breaking Point): 
     # The LARGEST k-value where the model is still failing (< 50% success)
     # This represents the "floor" of usability.
-    failing_indices = np.where(recs >= 0.5)[0]
-    if len(failing_indices) > 0:
-        k_low = k_values[failing_indices[0]] # The last k that was still "bad"
+    passing_indices = np.where(recs >= 0.5)[0]
+    if len(passing_indices) > 0:
+        k_low = k_values[passing_indices[0]]
     else:
         k_low = k_values[-1]
 
     return best_k, trans_k, k_low, recs
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Sweep k values for batched Hopfield recovery.")
+    parser.add_argument("--acts", nargs="+", default=["elu"])
+    parser.add_argument("--k-min", type=float, default=0.15)
+    parser.add_argument("--k-max", type=float, default=0.5)
+    parser.add_argument("--k-steps", type=int, default=51)
+    parser.add_argument("--n-trials", type=int, default=500)
+    parser.add_argument("--size", type=int, default=200)
+    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--temp", type=float, default=0)
+    parser.add_argument("--patterns", type=int, default=2000)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--corruption-rate", type=float, default=0.10)
+    parser.add_argument("--seed", type=int, default=12345)
+    return parser.parse_args()
 
 
-# -------------------------
-# Experiment settings
-# -------------------------
-acts = ['elu']
-coarse_k_values = np.linspace(0.15, 0.5, 51)  # 0 → 0.6
-n_trials = 500
-size = 200
-epochs = 1000
-temp = 0
-pattern_counts = [2000]
-n_value = pattern_counts[0]
-batch_size = 128
-device = 'mps'  # or 'mps'
+def choose_device(requested_device):
+    if requested_device is not None:
+        return requested_device
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
-# -------------------------
-# Run evaluation
-# -------------------------
-metrics = evaluate_grid(acts, coarse_k_values, n_trials, size, epochs, temp, n_value, batch_size, device)
 
-# -------------------------
-# Summarize results
-# -------------------------
-# with open("selected_k_values_2.txt", "w") as f:
-#     for act in acts:
-#         print(act)
-#         best_k, trans_k, recs = summarize_for_act(metrics, act, coarse_k_values)
-#         k_low = coarse_k_values[np.where(recs < 0.2)[0][0]] if np.any(recs < 0.2) else coarse_k_values[0]
-#         f.write(f"{act}: best_k={best_k:.3f}, trans_k={trans_k:.3f}, low_k={k_low:.3f}\n")
+def main():
+    args = parse_args()
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    acts = args.acts
+    coarse_k_values = np.linspace(args.k_min, args.k_max, args.k_steps)
+    device = choose_device(args.device)
 
-with open("K_values_iteration_4.txt", "w") as f:
+    metrics = evaluate_grid(
+        acts,
+        coarse_k_values,
+        args.n_trials,
+        args.size,
+        args.epochs,
+        args.temp,
+        args.patterns,
+        args.batch_size,
+        device,
+        args.corruption_rate,
+    )
+
+    summary_path = f"K_values_N{args.size}_P{args.patterns}.txt"
+    curves_path = f"full_recovery_curves_N{args.size}_P{args.patterns}.csv"
+    metrics_path = f"metrics_dump_N{args.size}_P{args.patterns}.pkl"
+
+    with open(summary_path, "w") as f:
+        f.write(f"N={args.size}, patterns={args.patterns}, corruption={args.corruption_rate:.0%}, seed={args.seed}\n")
+        f.write("Protocol: corrupted-memory retrieval; success requires exact recovery of the target memory.\n\n")
+        for act in acts:
+            best_k, trans_k, k_low, recs = summarize_for_act(metrics, act, coarse_k_values)
+
+            f.write(f"--- {act.upper()} ---\n")
+            if act == 'step':
+                try:
+                    traditional_acc = metrics[('step', 0.0)]['recovery_fraction']
+                    f.write(f"Traditional Hopfield (k=0) Accuracy: {traditional_acc:.3f}\n")
+                except KeyError:
+                    f.write("Traditional Hopfield (k=0): Not tested in this range\n")
+
+            f.write(f"Best K (Peak): {best_k:.3f} (Acc: {recs.max():.3f})\n")
+            f.write(f"Transition K (The Jump): {trans_k:.3f}\n")
+            f.write(f"Low K (Breaking Point): {k_low:.3f}\n\n")
+
+    results_table = {"k_value": coarse_k_values}
     for act in acts:
-        best_k, trans_k, k_low, recs = summarize_for_act(metrics, act, coarse_k_values)
-        
-        # Special check for traditional Hopfield
-        f.write(f"--- {act.upper()} ---\n")
-        if act == 'step':
-            try:
-                traditional_acc = metrics[('step', 0.0)]['recovery_fraction']
-                #f.write(f"--- {act.upper()} ---\n")
-                f.write(f"Traditional Hopfield (k=0) Accuracy: {traditional_acc:.3f}\n")
-            except:
-                f.write("Traditional Hopfield (k=0): Not tested in this range\n")
-            
-        f.write(f"Best K (Peak): {best_k:.3f} (Acc: {recs.max():.3f})\n")
-        f.write(f"Transition K (The Jump): {trans_k:.3f}\n")
-        f.write(f"Low K (Breaking Point): {k_low:.3f}\n\n")
+        results_table[act] = [metrics[(act, k)]['recovery_fraction'] for k in coarse_k_values]
+
+    df = pd.DataFrame(results_table)
+    df.to_csv(curves_path, index=False)
+
+    with open(metrics_path, "wb") as f:
+        pickle.dump(metrics, f)
+
+    print(f"\nSaved summary to {summary_path}")
+    print(f"Saved full raw data to {curves_path}")
+    print(f"Saved metrics dump to {metrics_path}")
 
 
-
-results_table = {"k_value": coarse_k_values}
-for act in acts:
-    results_table[act] = [metrics[(act, k)]['recovery_fraction'] for k in coarse_k_values]
-
-df = pd.DataFrame(results_table)
-df.to_csv("full_recovery_curves_P2000.csv", index=False)
-
-# Optional: Save the whole metrics object just in case
-with open("metrics_dump_P2000.pkl", "wb") as f:
-    pickle.dump(metrics, f)
-
-print("\nSaved summary to Selected_k_values_summary.txt")
-print("Saved full raw data to full_recovery_curves_P2000.csv")
+if __name__ == "__main__":
+    main()
 
 
-
-
-# python /Users/kavinfidel/Documents/Fidel/IMSC/Project/Recovery_Capacity_Hopfield_Networks/batched/K_coarse_sweep.py
+# python /Users/kavinfidel/Documents/Fidel/IMSC/Project/Recovery_Capacity_Hopfield_Networks/batched/K_coarse_sweep.py --size 200 --patterns 2000

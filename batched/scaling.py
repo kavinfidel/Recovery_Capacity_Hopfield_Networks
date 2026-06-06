@@ -4,13 +4,14 @@ import matplotlib.pyplot as plt
 from scipy.stats import linregress
 import time
 import pandas as pd
+import argparse
 
 from hopfield_batched import Hopfield_Network_gpu
 # K - number of patterns; N- neurons
 def generate_patterns(num_patterns, N):
     return np.random.choice([-1, 1], size=(num_patterns, N))
 
-def evaluate_capacity(N, K, k_val, act, n_trials, epochs, temp, base_batch_size, device):
+def evaluate_capacity(N, K, k_val, act, n_trials, epochs, temp, base_batch_size, device, corruption_rate):
     """Evaluates the recovery fraction for a specific N and K."""
     patterns = generate_patterns(K, N)
     
@@ -31,11 +32,15 @@ def evaluate_capacity(N, K, k_val, act, n_trials, epochs, temp, base_batch_size,
         idx = torch.randint(0,K,(bs,), device = device)
         target_patterns = model.patterns[idx]
         x_corrupted = target_patterns.clone()
-        noise_mask = torch.rand(x_corrupted.shape,device = device) < 0.10
+        noise_mask = torch.rand(x_corrupted.shape,device = device) < corruption_rate
         x_corrupted[noise_mask] *= -1.0
 
-        # Calling your method exactly as defined
-        perfect_recovery, _ = model.mc_simulation_recovery_batch(x_corrupted, epochs, temp)
+        perfect_recovery, _ = model.mc_simulation_recovery_corrupted_batch(
+            x_corrupted,
+            epochs,
+            temp,
+            target_indices=idx,
+        )
         successes += int(perfect_recovery.sum().item())
         n_done += bs
         
@@ -52,18 +57,21 @@ def evaluate_capacity(N, K, k_val, act, n_trials, epochs, temp, base_batch_size,
         
     return successes / n_trials
 
-def find_critical_capacity(N, k_val, act, threshold=0.5, n_trials=500, epochs=1000, temp=0, batch_size=128, device='mps'):
+def get_k_value(N, k_base, k_strategy):
+    if k_strategy == 'adaptive':
+        return 3.0 / np.sqrt(N)
+    return k_base
+
+def find_critical_capacity(N, k_val, act, threshold=0.5, n_trials=500, epochs=1000, temp=0, batch_size=128, device='mps', corruption_rate=0.10):
     """Uses binary search to efficiently find Kc where accuracy drops below the threshold."""
-    print(f"--- Finding Kc for N={N} ---")
-    
-    k_adaptive = 3.0 / np.sqrt(N)
+    print(f"--- Finding Kc for N={N}, k={k_val:.4f}, corruption={corruption_rate:.0%} ---")
 
     low = int(0.1 * N)
     high = int(2.0 * N) 
     best_K = low
     
     # Fast initial expansion
-    while evaluate_capacity(N, high, k_adaptive, act, min(100, n_trials), epochs, temp, batch_size, device) >= threshold:
+    while evaluate_capacity(N, high, k_val, act, min(100, n_trials), epochs, temp, batch_size, device, corruption_rate) >= threshold:
         low = high
         high = int(high * 2)
         print(f"    Expanding search bounds to high={high}")
@@ -72,7 +80,7 @@ def find_critical_capacity(N, k_val, act, threshold=0.5, n_trials=500, epochs=10
     # Binary Search
     while low <= high:
         mid = (low + high) // 2
-        acc = evaluate_capacity(N, mid, k_adaptive, act, n_trials, epochs, temp, batch_size, device)
+        acc = evaluate_capacity(N, mid, k_val, act, n_trials, epochs, temp, batch_size, device, corruption_rate)
         
         print(f"    Testing K={mid} -> Acc: {acc:.3f}")
         
@@ -84,7 +92,25 @@ def find_critical_capacity(N, k_val, act, threshold=0.5, n_trials=500, epochs=10
             
     return best_K
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Measure Hopfield recovery capacity scaling.")
+    parser.add_argument("--n-values", type=int, nargs="+", default=[100, 200, 500, 1000])
+    parser.add_argument("--k", type=float, default=0.3)
+    parser.add_argument("--k-strategy", choices=["fixed", "adaptive"], default="adaptive")
+    parser.add_argument("--activation", default="elu")
+    parser.add_argument("--threshold", type=float, default=0.95)
+    parser.add_argument("--n-trials", type=int, default=200)
+    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--temp", type=float, default=0)
+    parser.add_argument("--base-batch-size", type=int, default=256)
+    parser.add_argument("--corruption-rate", type=float, default=0.10)
+    parser.add_argument("--seed", type=int, default=12345)
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         device = 'cuda'
     elif torch.backends.mps.is_available():
@@ -92,28 +118,27 @@ def main():
     else:
         device = 'cpu'
     print(f"Using device: {device.upper()}")
-
-
-
-
-   # Hyperparameters
-    N_values = [100,200,500,1000]
-    k_fixed = 0.3
-    activation = 'elu'
-    n_trials = 200
-    epochs = 1000
-    temp = 0
-    base_batch_size = 256
-    
     results = []
     
-    for N in N_values:
+    for N in args.n_values:
         start_time = time.time()
-        Kc = find_critical_capacity(N, k_fixed, activation, 0.95, n_trials, epochs, temp, base_batch_size, device)
+        k_val = get_k_value(N, args.k, args.k_strategy)
+        Kc = find_critical_capacity(
+            N,
+            k_val,
+            args.activation,
+            args.threshold,
+            args.n_trials,
+            args.epochs,
+            args.temp,
+            args.base_batch_size,
+            device,
+            args.corruption_rate,
+        )
         elapsed = time.time() - start_time
         
-        print(f"=> N={N} | Critical Capacity Kc={Kc} | Time: {elapsed:.1f}s\n")
-        results.append({'N': N, 'Kc': Kc})
+        print(f"=> N={N} | k={k_val:.4f} | Critical Capacity Kc={Kc} | Time: {elapsed:.1f}s\n")
+        results.append({'N': N, 'activation': args.activation, 'k': k_val, 'Kc': Kc})
         
     df = pd.DataFrame(results)
     df.to_csv("scaling_results.csv", index=False)
@@ -128,7 +153,7 @@ def main():
     plt.plot(log_N, slope * log_N + intercept, color='red', linestyle='--', 
              label=f'Fit (Slope = {slope:.3f})')
     
-    plt.title(f'Scaling of Critical Capacity (Activation: {activation.upper()}, k={k_fixed})')
+    plt.title(f'Scaling of Critical Capacity (Activation: {args.activation.upper()}, k={args.k_strategy})')
     plt.xlabel('log10(N)')
     plt.ylabel('log10(Kc)')
     plt.legend()

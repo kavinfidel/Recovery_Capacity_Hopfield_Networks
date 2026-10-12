@@ -31,7 +31,7 @@ for n_value in pattern_counts:
 
         for k in k_values:
             print(f"    Threshold k = {k}")
-            model = Hopfield_Network_gpu(size, patterns, k, activation=act, device='mps')
+            model = Hopfield_Network_gpu(size, patterns, k, activation=act, device='auto')
 
             successes = 0
             max_overlaps = []

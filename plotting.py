@@ -42,3 +42,35 @@ plt.show()
 
 
 # python /Users/kavinfidel/Documents/Fidel/IMSC/Project/Recovery_Capacity_Hopfield_Networks/plotting.py
+
+
+
+python batched/preprint_experiments.py random-k-half \
+  --activations relu elu \
+  --n-values 50 75 100 125 150 175 200 \
+  --memory-values 50 100 150 200 300 400 600 800 1000 1200 1500 2000 3000 4000\
+  --n-samples 1000 \
+  --max-sweeps 100 \
+  --stable-sweeps 1 \
+  --temp 0.0 \
+  --batch-size 256 \
+  --device mps \
+  --k 0.2 \
+  --seed 12345 \
+  --out-dir preprint_results/random_k_half_random_binary_init_relu_elu
+
+
+python batched/preprint_experiments.py random-k-half \
+  --activations dam relu elu \
+  --n-values 50 75 85 95 100 110 125 135 145 150 160 175 185 200 \
+  --memory-values 50 100 200 400 600 800 1000 2000 4000 8000 10000 20000 30000\
+  --n-samples 1000 \
+  --max-sweeps 100 \
+  --stable-sweeps 1 \
+  --temp 0.0 \
+  --batch-size 512 \
+  --device mps \
+  --k 0.2 \
+  --dam-power 3.0 \
+  --seed 12345 \
+  --out-dir preprint_results/random_k_half_random_binary_init_dam_relu_elu
